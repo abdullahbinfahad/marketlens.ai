@@ -7,7 +7,7 @@ import google.generativeai as genai
 ALIBABA_API_KEY = "ok_f8d69264b35fbdc6a3b35086d763874c"
 ALIBABA_BASE_URL = "https://alibaba-scraper.omkar.cloud/alibaba/products/search"
 
-GEMINI_API_KEY = "AIzaSyCSUkWRunK7RfHy-4P2uKgLHNF4TwaHxHE"
+GEMINI_API_KEY = "AIzaSyC1b2vkrnFfQzQow2PlY_d9NBKRtL2Ffuc"
 genai.configure(api_key=GEMINI_API_KEY)
 
 # ------------------- Page Config -------------------
