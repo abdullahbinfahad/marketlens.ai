@@ -110,7 +110,7 @@ with st.sidebar:
 
 # ------------------- Main UI -------------------
 st.title("MarketLens AI")
-st.subheader("Alibaba Live Data → Gemini AI Analysis")
+st.subheader("Alibaba Live Data → MarketLens AI Analysis")
 st.divider()
 
 tab1, tab2, tab3, tab4 = st.tabs(["🏠 Home", "🔎 Product Analysis", "📈 Market Data", "👥 Team"])
