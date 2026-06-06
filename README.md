@@ -1,12 +1,12 @@
-# MarketLens AI v2.0 🎯
+# MarketLens AI v2.0 - Fixed Edition 🎯
 
 **Smart Cross-Border Product Intelligence Platform**
 
-MarketLens AI is an intelligent decision-making agent for cross-border e-commerce. It analyzes **50+ products** with **1000+ customer reviews** using **DeepSeek AI** to identify market gaps and opportunities.
+This is the **Streamlit Cloud-compatible version** of MarketLens AI. It analyzes **50+ products** with **1000+ customer reviews** using **DeepSeek AI** to identify market gaps and opportunities.
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Local)
 
 ### 1. Install Dependencies
 ```bash
@@ -15,7 +15,7 @@ pip install -r requirements.txt
 
 ### 2. Run the Application
 ```bash
-streamlit run app.py/streamlit_app.py
+streamlit run streamlit_app.py
 ```
 
 ### 3. Open Browser
@@ -23,18 +23,45 @@ Navigate to: `http://localhost:8501`
 
 ---
 
-## 📊 Project Structure
+## ☁️ Streamlit Cloud Deployment
+
+### Setup Instructions:
+
+1. **Push to GitHub**
+   - Create a new repository
+   - Push all files to GitHub
+
+2. **Connect to Streamlit Cloud**
+   - Go to https://share.streamlit.io/
+   - Click "New app"
+   - Select your GitHub repository
+   - Set main file path to: `streamlit_app.py`
+
+3. **Configure Secrets (Optional)**
+   - In Streamlit Cloud dashboard, go to "Secrets"
+   - Add your DeepSeek API key:
+     ```
+     DEEPSEEK_API_KEY = "sk-your-key-here"
+     ```
+
+4. **Deploy**
+   - Click "Deploy"
+   - Wait for the app to build and launch
+
+---
+
+## 📁 Project Structure
 
 ```
-MarketLens_AI_v2/
-├── app.py/
-│   └── streamlit_app.py          # Main Streamlit application
-├── data_generator.py              # Generates 50+ products, 1000+ reviews
-├── sentiment.py                   # DeepSeek sentiment analysis
-├── algorithms.py                  # Perfect scoring algorithms
-├── requirements.txt               # Python dependencies
-├── .env.example                   # Environment template
-└── README.md                      # This file
+MarketLens_AI_Fixed/
+├── streamlit_app.py              # Main app (Streamlit Cloud entry point)
+├── data_generator.py             # 50 products, 1000 reviews
+├── sentiment.py                  # DeepSeek sentiment analysis
+├── algorithms.py                 # Perfect scoring formulas
+├── streamlit.toml               # Streamlit configuration
+├── requirements.txt             # Python dependencies
+├── .env.example                 # Environment template
+└── README.md                    # This file
 ```
 
 ---
@@ -65,22 +92,22 @@ MarketLens_AI_v2/
 
 **Demand Score (0-100)**
 ```
-Formula: (Search_Volume × 0.35) + (Sales_Velocity × 0.40) + (Reviews × 0.15) + (Trend × 0.10)
+(Search_Volume × 0.35) + (Sales_Velocity × 0.40) + (Reviews × 0.15) + (Trend × 0.10)
 ```
 
 **Profit Score (0-100)**
 ```
-Formula: (Price_Competitiveness × 0.40) + (Rating × 0.35) + (Competition_Efficiency × 0.25)
+(Price_Competitiveness × 0.40) + (Rating × 0.35) + (Competition_Efficiency × 0.25)
 ```
 
 **Risk Score (0-100)**
 ```
-Formula: (Market_Saturation × 0.50) + (Competitor_Penalty × 0.35) + (Rating_Risk × 0.15)
+(Market_Saturation × 0.50) + (Competitor_Penalty × 0.35) + (Rating_Risk × 0.15)
 ```
 
 **Overall Score (0-100)**
 ```
-Formula: (Demand × 0.40) + (Profit × 0.30) - (Risk × 0.20) + (Competition × 0.10)
+(Demand × 0.40) + (Profit × 0.30) - (Risk × 0.20) + (Competition × 0.10)
 ```
 
 ### ✅ Intelligent Verdicts
@@ -101,21 +128,19 @@ Formula: (Demand × 0.40) + (Profit × 0.30) - (Risk × 0.20) + (Competition × 
 
 ### Optional: Add Real AI Analysis
 
-1. **Get API Key**
-   - Visit: https://platform.deepseek.com/
-   - Create account and get API key
-
-2. **Configure Environment**
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your key
+**Local Setup:**
+1. Get API key from https://platform.deepseek.com/
+2. Create `.env` file:
+   ```
    DEEPSEEK_API_KEY=sk-your-key-here
    ```
+3. Restart the app
 
-3. **Restart App**
-   ```bash
-   streamlit run app.py/streamlit_app.py
-   ```
+**Streamlit Cloud Setup:**
+1. Go to your app's settings
+2. Click "Secrets"
+3. Add: `DEEPSEEK_API_KEY = "sk-your-key-here"`
+4. Save and redeploy
 
 ### Without API Key
 - App uses mock sentiment analysis
@@ -174,24 +199,6 @@ Formula: (Demand × 0.40) + (Profit × 0.30) - (Risk × 0.20) + (Competition × 
 
 ---
 
-## 📊 Data Sample
-
-### Products Include:
-- Wireless Earbuds Pro ($89.99, 4.3★)
-- Noise Cancelling Headphones ($199.99, 4.6★)
-- Smart Watch Series 5 ($299.99, 4.4★)
-- Cotton T-Shirt Pack ($34.99, 4.4★)
-- Yoga Mat Non-Slip ($24.99, 4.6★)
-- And 45 more...
-
-### Reviews Include:
-- "Excellent product! Exceeded my expectations."
-- "Poor quality. Broke after a week."
-- "It's okay, nothing special."
-- And 997 more...
-
----
-
 ## 🎨 UI/UX Features
 
 - **Modern Design**: Gradient backgrounds, rounded cards
@@ -213,20 +220,39 @@ Formula: (Demand × 0.40) + (Profit × 0.30) - (Risk × 0.20) + (Competition × 
 
 ## 🐛 Troubleshooting
 
-### Port Already in Use
+### Local Issues
+
+**Port Already in Use**
 ```bash
-streamlit run app.py/streamlit_app.py --server.port 8502
+streamlit run streamlit_app.py --server.port 8502
 ```
 
-### Clear Cache
+**Clear Cache**
 ```bash
 streamlit cache clear
 ```
 
-### API Key Issues
+**API Key Issues**
 - Verify key is correct in `.env`
 - Check API has sufficient credits
 - App will fall back to mock analysis if key fails
+
+### Streamlit Cloud Issues
+
+**App crashes on load:**
+1. Check the "Logs" tab in Streamlit Cloud
+2. Ensure all dependencies are in `requirements.txt`
+3. Verify `streamlit_app.py` is in the root directory
+
+**Data not loading:**
+1. Check internet connection
+2. Verify data_generator.py is in the same directory
+3. Check app logs for errors
+
+**API key not working:**
+1. Verify key in Streamlit Cloud Secrets
+2. Check key hasn't expired
+3. App will use mock analysis as fallback
 
 ---
 
@@ -235,28 +261,8 @@ streamlit cache clear
 - **Page Load**: <2 seconds (with caching)
 - **Analysis Time**: <1 second
 - **Memory Usage**: <300MB
-- **Data Size**: 50 products, 1000 reviews, 72 trend records
-
----
-
-## 🚀 Deployment
-
-### Local Deployment
-```bash
-streamlit run app.py/streamlit_app.py
-```
-
-### Streamlit Cloud
-1. Push to GitHub
-2. Connect repository to Streamlit Cloud
-3. Configure environment variables
-4. Deploy with one click
-
-### Docker
-```bash
-docker build -t marketlens-ai .
-docker run -p 8501:8501 marketlens-ai
-```
+- **Data Generation**: One-time on startup
+- **Cached Data**: Persistent across sessions
 
 ---
 
