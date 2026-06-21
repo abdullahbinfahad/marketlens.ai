@@ -1,0 +1,48 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-primary-dark: ;
+}
+
+@font-face {
+  font-family: 'Lemonmilk';
+  src: url('assets/LEMONMILK-Bold.otf');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Coolvetica';
+  src: url('assets/Coolvetica\ Rg.otf');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+#root {
+  font-family: 'Coolvetica', sans-serif;
+}
+
+h1 {
+  font-family: 'Lemonmilk', sans-serif;
+  letter-spacing: -.3rch;
+}
+
+h2 {
+  font-weight: bolder;
+  font-size: 1.5rem;
+  letter-spacing: .1rch;
+}
+
+h3 {
+  font-weight: bolder;
+  letter-spacing: .1rch;
+}
+
+.a{
+  color: #f9f9f9;
+  color: #373737;
+  color: #2196F3;
+}
