@@ -1,657 +1,180 @@
-"""
-MarketLens AI - Complete Streamlit Application
-Smart Cross-Border Product Intelligence Platform
+"""MarketLens AI public Streamlit application."""
+from __future__ import annotations
 
-UNIVERSAL VERSION - Works with any Streamlit Cloud path setting
-Python 3.14+ Compatible
-"""
-
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
-import plotly.express as px
-import numpy as np
-from datetime import datetime
 import os
-from dotenv import load_dotenv
+from datetime import datetime, timezone
 
-# Load environment variables
-load_dotenv()
+import pandas as pd
+import plotly.express as px
+import streamlit as st
 
-# Import local modules
-from data_generator import generate_products, generate_reviews, generate_trends
-from sentiment import SentimentAnalyzer
-from algorithms import calculate_all_scores
+from algorithms import WEIGHTS, get_verdict_explanation
+from marketlens_data import add_calculated_scores, coverage_summary, load_catalogue, search_catalogue
 
-# ============================================================================
-# PAGE CONFIGURATION
-# ============================================================================
-
-st.set_page_config(
-    page_title="MarketLens AI",
-    page_icon="🎯",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-# ============================================================================
-# CUSTOM CSS
-# ============================================================================
+st.set_page_config(page_title="MarketLens AI", page_icon="◎", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
-    * {
-        margin: 0;
-        padding: 0;
-        box-sizing: border-box;
-    }
-    
-    body {
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    }
-    
-    .main {
-        background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-    }
-    
-    .card {
-        background: white;
-        border-radius: 15px;
-        padding: 20px;
-        margin: 15px 0;
-        box-shadow: 0 5px 20px rgba(0, 0, 0, 0.08);
-        border: 2px solid transparent;
-        transition: all 0.3s ease;
-    }
-    
-    .card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.15);
-        border-color: #667eea;
-    }
-    
-    h1, h2, h3 {
-        color: #333;
-        margin: 20px 0 10px 0;
-    }
-    
-    h1 {
-        font-size: 36px;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
-    }
-    
-    h2 {
-        font-size: 24px;
-        color: #667eea;
-    }
-    
-    h3 {
-        font-size: 18px;
-        color: #764ba2;
-    }
-    
-    .verdict-box {
-        border-radius: 15px;
-        padding: 25px;
-        margin: 20px 0;
-        font-size: 18px;
-        font-weight: 600;
-        text-align: center;
-        animation: slideIn 0.5s ease;
-    }
-    
-    .verdict-go {
-        background: linear-gradient(135deg, #84fab0 0%, #8fd3f4 100%);
-        color: #1a5f3f;
-    }
-    
-    .verdict-caution {
-        background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
-        color: #5f4a1a;
-    }
-    
-    .verdict-pass {
-        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
-        color: white;
-    }
-    
-    @keyframes slideIn {
-        from {
-            opacity: 0;
-            transform: translateY(-10px);
-        }
-        to {
-            opacity: 1;
-            transform: translateY(0);
-        }
-    }
+:root { --ink:#101828; --muted:#667085; --line:#e4e7ec; --blue:#175cd3; --blue-soft:#eff8ff; --green:#039855; --amber:#b54708; }
+.block-container { max-width: 1360px; padding-top: 2rem; padding-bottom: 4rem; }
+[data-testid="stSidebar"] { background: #f8fafc; border-right: 1px solid #eaecf0; }
+.hero { border:1px solid #d0d5dd; border-radius:24px; padding:32px; background: radial-gradient(circle at 90% 10%, #dbeafe 0, transparent 35%), linear-gradient(135deg,#ffffff,#f8fbff); margin-bottom:24px; }
+.hero h1 { font-size: clamp(2rem, 4vw, 3.6rem); letter-spacing:-.06em; color:var(--ink); margin:8px 0; }
+.hero p { color:var(--muted); max-width:760px; font-size:1.05rem; line-height:1.7; }
+.eyebrow { color:var(--blue); text-transform:uppercase; letter-spacing:.14em; font-size:.73rem; font-weight:800; }
+.pill { display:inline-block; border:1px solid #b2ddff; background:var(--blue-soft); color:var(--blue); border-radius:999px; padding:5px 10px; font-size:.78rem; font-weight:700; }
+.verdict { border-radius:16px; padding:16px 20px; font-weight:700; margin:10px 0 18px; }
+.verdict-go { background:#ecfdf3; color:#027a48; border:1px solid #abefc6; }
+.verdict-caution { background:#fffaeb; color:#b54708; border:1px solid #fedf89; }
+.verdict-pass { background:#fef3f2; color:#b42318; border:1px solid #fecdca; }
+.small-note { color:var(--muted); font-size:.83rem; line-height:1.55; }
+.section-title { margin:20px 0 4px; color:var(--ink); }
+[data-testid="stMetric"] { background:#fff; border:1px solid var(--line); border-radius:16px; padding:16px; }
 </style>
 """, unsafe_allow_html=True)
 
-# ============================================================================
-# SESSION STATE
-# ============================================================================
 
-if "analysis_history" not in st.session_state:
-    st.session_state.analysis_history = []
+def source_config() -> str:
+    try:
+        return str(st.secrets.get("MARKETLENS_DATA_URL", os.getenv("MARKETLENS_DATA_URL", "")))
+    except Exception:
+        return os.getenv("MARKETLENS_DATA_URL", "")
 
-if "api_key" not in st.session_state:
-    st.session_state.api_key = os.getenv("DEEPSEEK_API_KEY")
 
-# ============================================================================
-# DATA LOADING (CACHED)
-# ============================================================================
+def verdict_class(verdict: str) -> str:
+    return {"GO": "verdict-go", "CAUTION": "verdict-caution", "PASS": "verdict-pass"}.get(verdict, "verdict-pass")
 
-@st.cache_data
-def load_all_data():
-    """Load and cache all application data."""
-    products = generate_products(50)
-    reviews = generate_reviews(1000, 50)
-    trends = generate_trends(12, 6)
-    return products, reviews, trends
 
-try:
-    products_df, reviews_df, trends_df = load_all_data()
-except Exception as e:
-    st.error(f"Error loading data: {e}")
-    st.stop()
+def display_number(value: object, suffix: str = "") -> str:
+    if pd.isna(value) if not isinstance(value, str) else not value.strip():
+        return "Unavailable"
+    if isinstance(value, float):
+        return f"{value:,.2f}{suffix}"
+    return f"{value}{suffix}"
 
-# ============================================================================
-# SIDEBAR
-# ============================================================================
 
-with st.sidebar:
-    st.markdown("### 🎯 MarketLens AI")
-    st.markdown("**Smart Cross-Border Product Intelligence**")
-    st.markdown("---")
-    
-    page = st.radio(
-        "Select Page:",
-        ["🏠 Home", "📊 Analysis", "📈 Trends", "👤 Profile", "📚 Research"],
-        label_visibility="collapsed"
-    )
-    
-    st.markdown("---")
-    st.markdown("### 📊 Quick Stats")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Products", len(products_df))
-    with col2:
-        st.metric("Reviews", len(reviews_df))
-    
-    st.markdown("---")
-    st.markdown("### ⚙️ Settings")
-    api_key_input = st.text_input(
-        "DeepSeek API Key",
-        type="password",
-        value=st.session_state.get("api_key", ""),
-        help="Optional: Leave empty for mock analysis"
-    )
-    if api_key_input:
-        st.session_state.api_key = api_key_input
-    
-    st.markdown("---")
-    st.caption("MarketLens AI v2.0 | Nanjing Tech University")
+def render_score_card(row: pd.Series) -> None:
+    verdict = str(row.get("calculated_product_verdict", "PASS"))
+    score = float(row.get("calculated_final_market_score", 0) or 0)
+    confidence = float(row.get("evidence_confidence", 0) or 0)
+    st.markdown(f'<div class="verdict {verdict_class(verdict)}"><span>{verdict}</span> · {score:.1f}/100 · Evidence confidence {confidence:.1f}%</div>', unsafe_allow_html=True)
+    st.caption(get_verdict_explanation(verdict, score))
+    chart = pd.DataFrame({"Component": ["Demand 40%", "Profit 30%", "Risk 20%", "Competition gap 10%"], "Score": [row.get("calculated_demand_score", 0), row.get("calculated_profit_score", 0), row.get("calculated_risk_score", 0), row.get("calculated_competition_gap_score", 0)]})
+    st.bar_chart(chart.set_index("Component"), height=220, color="#175cd3")
+    st.markdown(f"**Method:** fixed weights — Demand {WEIGHTS['demand']:.0%}, Profit {WEIGHTS['profit']:.0%}, Risk {WEIGHTS['risk']:.0%}, Competition Gap {WEIGHTS['competition_gap']:.0%}.")
 
-# ============================================================================
-# HOME PAGE
-# ============================================================================
 
-if "🏠" in page:
-    st.markdown("# 🎯 MarketLens AI")
-    st.markdown("### Smart Cross-Border Product Intelligence")
-    
-    st.markdown("""
-    MarketLens AI is an intelligent decision-making agent for cross-border e-commerce.
-    It answers: **Which products will perform best in targeted overseas markets?**
-    """)
-    
-    st.markdown("---")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown("### 📊 Analyze Products\nGet instant insights on demand, profit, risk, and competition gaps.")
-        if st.button("Start Analysis →", key="btn_analysis", use_container_width=True):
-            st.session_state.page = "Analysis"
-    
-    with col2:
-        st.markdown("### 📈 Explore Trends\nVisualize market trends and category performance.")
-        if st.button("View Trends →", key="btn_trends", use_container_width=True):
-            st.session_state.page = "Trends"
-    
-    with col3:
-        st.markdown("### 👤 Your Profile\nTrack analyses and manage settings.")
-        if st.button("Go to Profile →", key="btn_profile", use_container_width=True):
-            st.session_state.page = "Profile"
-    
-    st.markdown("---")
-    st.markdown("## 🌟 Key Features")
-    
-    feature_col1, feature_col2 = st.columns(2)
-    
-    with feature_col1:
-        st.markdown("""
-        **🤖 AI-Powered Sentiment Analysis**
-        - Analyzes 1000+ customer reviews
-        - Identifies market gaps
-        - Detects unmet needs
-        
-        **💰 Smart Scoring Engine**
-        - Demand Score: Market appetite
-        - Profit Score: Financial viability
-        - Risk Score: Market saturation
-        """)
-    
-    with feature_col2:
-        st.markdown("""
-        **📊 Real-time Market Intelligence**
-        - Track 50+ products
-        - Monitor 6 categories
-        - Analyze seasonal patterns
-        
-        **🎯 Actionable Verdicts**
-        - GO: Strong opportunity (≥75)
-        - CAUTION: Moderate (50-74)
-        - PASS: High risk (<50)
-        """)
-    
-    st.markdown("---")
-    st.markdown("## 📊 Market Overview")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Products", len(products_df))
-    with col2:
-        st.metric("Total Reviews", len(reviews_df))
-    with col3:
-        st.metric("Categories", products_df["category"].nunique())
-    with col4:
-        st.metric("Avg Rating", f"{products_df['avg_rating'].mean():.1f}/5.0")
+def render_product(row: pd.Series, coverage: dict[str, object]) -> None:
+    name = str(row.get("product_name", "Unnamed product"))
+    category = str(row.get("main_category", "Category unavailable"))
+    st.markdown(f"## {name}")
+    st.caption(f"{row.get('brand') or 'Brand unavailable'} · {category} · ID {row.get('product_id')}")
+    tabs = st.tabs(["Decision", "Product overview", "Market signals", "Provenance"])
+    with tabs[0]:
+        render_score_card(row)
+        if row.get("calculated_product_verdict") == "PASS":
+            st.warning("The current evidence does not support a confident launch decision. This is not a claim that the product cannot sell; it means the supplied evidence is weak or unfavorable.")
+    with tabs[1]:
+        st.write(row.get("product_description") or "No product description was supplied.")
+        left, right = st.columns(2)
+        with left:
+            st.metric("Selling price", display_number(row.get("selling_price_usd"), f" {row.get('currency') or 'USD'}"))
+            st.metric("Monthly revenue", display_number(row.get("monthly_revenue"), " USD"))
+            st.metric("Average rating", display_number(row.get("average_rating"), " / 5"))
+        with right:
+            st.metric("Monthly unit sales", display_number(row.get("monthly_unit_sales")))
+            st.metric("Net profit / unit", display_number(row.get("net_profit_per_unit_usd"), " USD"))
+            st.metric("Active sellers", display_number(row.get("total_active_sellers")))
+    with tabs[2]:
+        signal_table = pd.DataFrame({"Signal": ["30-day sales growth", "Positive reviews", "Negative reviews", "Saturation", "Competitor price gap", "Customer pain points", "Unmet needs"], "Observed value": [display_number(row.get("sales_growth_rate_30d"), "%"), display_number(row.get("positive_review_percent"), "%"), display_number(row.get("negative_review_percent"), "%"), display_number(row.get("market_saturation_score")), display_number(row.get("price_gap_vs_average_competitor_percent"), "%"), row.get("top_customer_pain_points") or "Unavailable", row.get("unmet_customer_needs") or "Unavailable"]})
+        st.dataframe(signal_table, hide_index=True, use_container_width=True)
+        st.info("Signals are shown only when present in the loaded source. MarketLens does not infer missing commercial data from a product name or category.")
+    with tabs[3]:
+        st.write(f"**Source:** {coverage['source_label']}")
+        st.write(f"**Loaded at:** {coverage['loaded_at'] or 'Unavailable'}")
+        st.write(f"**Source URL:** {coverage['source_url'] or 'Not supplied'}")
+        st.write(f"**Workbook/source update:** {row.get('last_updated_timestamp') or 'Not supplied'}")
+        st.write("Source-supplied component scores and verdicts are retained only as reference fields. The displayed decision is recalculated by the MarketLens algorithm.")
 
-# ============================================================================
-# ANALYSIS PAGE
-# ============================================================================
 
-elif "📊" in page:
-    st.markdown("# 📊 Product Analysis")
-    st.markdown("Analyze any product and get instant insights on market opportunity.")
-    
-    st.markdown("---")
-    
-    tab1, tab2 = st.tabs(["📦 Select Existing Product", "✏️ Enter New Product"])
-    
-    with tab1:
-        st.markdown("### Choose from our database (50 products)")
-        
-        product_options = products_df["product_name"].tolist()
-        selected_product_name = st.selectbox(
-            "Select a product:",
-            product_options,
-            label_visibility="collapsed"
-        )
-        
-        selected_product = products_df[products_df["product_name"] == selected_product_name].iloc[0]
-        
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Price", f"${selected_product['price']:.2f}")
-        with col2:
-            st.metric("Rating", f"⭐ {selected_product['avg_rating']}/5.0")
-        with col3:
-            st.metric("Reviews", f"{selected_product['review_count']:,}")
-        
-        if st.button("Analyze This Product →", use_container_width=True, key="analyze_existing"):
-            st.session_state.selected_product = selected_product.to_dict()
-            st.session_state.analysis_mode = "existing"
-    
-    with tab2:
-        st.markdown("### Enter product details manually")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            product_name = st.text_input("Product Name", placeholder="e.g., Wireless Earbuds")
-            category = st.selectbox("Category", ["Electronics", "Fashion", "Home & Garden", "Sports", "Beauty"])
-            price = st.number_input("Price ($)", min_value=1.0, max_value=10000.0, value=100.0)
-        
-        with col2:
-            avg_rating = st.slider("Average Rating", 1.0, 5.0, 4.0, 0.1)
-            review_count = st.number_input("Review Count", min_value=0, max_value=100000, value=1000, step=100)
-            search_volume = st.number_input("Search Volume (30d)", min_value=0, max_value=100000, value=5000, step=100)
-        
-        if st.button("Analyze New Product →", use_container_width=True, key="analyze_new"):
-            if not product_name:
-                st.error("Please enter a product name")
-            else:
-                st.session_state.selected_product = {
-                    "product_name": product_name,
-                    "category": category,
-                    "price": price,
-                    "avg_rating": avg_rating,
-                    "review_count": review_count,
-                    "search_volume_30d": search_volume,
-                    "sales_velocity_weekly": int(review_count / 10),
-                    "trend_score": 60,
-                    "competitor_count": 50,
-                    "market_saturation": 55,
-                }
-                st.session_state.analysis_mode = "custom"
-    
-    # Display analysis results
-    if "selected_product" in st.session_state:
-        st.markdown("---")
-        st.markdown("## 📊 Analysis Results")
-        
-        product = st.session_state.selected_product
-        
-        # Get reviews
-        if st.session_state.analysis_mode == "existing":
-            product_reviews = reviews_df[reviews_df["product_id"] == product.get("product_id", "PROD_001")]["review_text"].tolist()[:50]
+def main() -> None:
+    with st.sidebar:
+        st.markdown("## ◎ MarketLens AI")
+        st.caption("Public product intelligence")
+        page = st.radio("Navigate", ["Explore products", "Compare opportunities", "Data source", "Methodology"], label_visibility="collapsed")
+        st.divider()
+        st.markdown("**Load a catalogue**")
+        upload = st.file_uploader("CSV or XLSX", type=["csv", "xlsx"], help="Use a source file with the 40-field MarketLens schema.")
+        configured_url = source_config()
+        if configured_url:
+            st.caption("A configured remote data source is available.")
         else:
-            product_reviews = reviews_df["review_text"].tolist()[:50]
-        
-        if not product_reviews:
-            product_reviews = ["Great product!", "Not as described", "Excellent quality"]
-        
-        # Sentiment analysis
-        analyzer = SentimentAnalyzer(api_key=st.session_state.api_key)
-        sentiment_result = analyzer.analyze_reviews(product["product_name"], product_reviews)
-        
-        # Calculate scores
-        scores = calculate_all_scores(product, gap_score_from_ai=sentiment_result["competition_gap_score"])
-        
-        # Display verdict
-        verdict_class = "verdict-go" if scores["verdict"] == "GO" else ("verdict-caution" if scores["verdict"] == "CAUTION" else "verdict-pass")
-        st.markdown(f"""
-        <div class="verdict-box {verdict_class}">
-            <h2>{scores['verdict']}</h2>
-            <p>{scores['verdict_explanation']}</p>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        st.markdown("---")
-        st.markdown("## 📈 Score Breakdown")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Demand Score", f"{scores['demand_score']:.1f}/100")
-        with col2:
-            st.metric("Profit Score", f"{scores['profit_score']:.1f}/100")
-        with col3:
-            st.metric("Risk Score", f"{scores['risk_score']:.1f}/100")
-        with col4:
-            st.metric("Competition Gap", f"{scores['competition_gap_score']:.1f}/100")
-        
-        st.markdown("---")
-        st.markdown("## 📊 Visual Analysis")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=scores['demand_score'],
-                title={'text': "Demand"},
-                gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#667eea"}},
-            ))
-            fig.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=scores['profit_score'],
-                title={'text': "Profit"},
-                gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#764ba2"}},
-            ))
-            fig.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col3:
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=scores['risk_score'],
-                title={'text': "Risk"},
-                gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#f5576c"}},
-            ))
-            fig.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col4:
-            fig = go.Figure(go.Indicator(
-                mode="gauge+number",
-                value=scores['competition_gap_score'],
-                title={'text': "Competition Gap"},
-                gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#84fab0"}},
-            ))
-            fig.update_layout(height=300, margin=dict(l=20, r=20, t=50, b=20))
-            st.plotly_chart(fig, use_container_width=True)
-        
-        st.markdown("---")
-        st.markdown("## 🤖 AI-Powered Insights")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("### 💡 Unmet Needs")
-            for need in sentiment_result["unmet_needs"]:
-                st.markdown(f"- {need}")
-        
-        with col2:
-            st.markdown("### ⚠️ Top Complaints")
-            for complaint in sentiment_result["top_complaints"]:
-                st.markdown(f"- {complaint}")
-        
-        st.markdown("---")
-        st.markdown("### 📝 Analysis Reasoning")
-        st.info(sentiment_result["reasoning"])
-        
-        st.markdown("---")
-        
-        if st.button("💾 Save to History", use_container_width=True):
-            analysis_record = {
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "product_name": product["product_name"],
-                "category": product.get("category", "Unknown"),
-                "verdict": scores["verdict"],
-                "overall_score": scores["overall_score"],
-            }
-            st.session_state.analysis_history.append(analysis_record)
-            st.success("✅ Analysis saved to your history!")
+            st.caption("No remote source configured. Upload a source file or set MARKETLENS_DATA_URL in Streamlit secrets.")
+        st.divider()
+        st.caption("Current-data claims require a source URL and update timestamp. Identity-only catalogue rows remain clearly marked.")
 
-# ============================================================================
-# TRENDS PAGE
-# ============================================================================
+    upload_bytes = upload.getvalue() if upload else None
+    try:
+        frame = load_catalogue(upload_bytes, upload.name if upload else "", configured_url)
+    except Exception as error:
+        st.error(f"The catalogue could not be loaded: {error}")
+        frame = load_catalogue()
+    scored = add_calculated_scores(frame)
+    coverage = coverage_summary(scored)
+    categories = ["All categories"] + sorted(str(item) for item in scored["main_category"].dropna().unique()) if not scored.empty else ["All categories"]
 
-elif "📈" in page:
-    st.markdown("# 📈 Market Trends")
-    st.markdown("Explore market trends across categories and time periods.")
-    
-    st.markdown("---")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        selected_category = st.selectbox("Select Category", ["All"] + trends_df["category"].unique().tolist())
-    with col2:
-        selected_metric = st.selectbox("Select Metric", ["search_volume", "sales_volume", "market_sentiment"])
-    
-    st.markdown("---")
-    
-    if selected_category == "All":
-        trend_data = trends_df.groupby("date")[selected_metric].mean().reset_index()
+    st.markdown('<div class="hero"><span class="pill">SOURCE-AWARE PRODUCT INTELLIGENCE</span><h1>Find products you can explain.</h1><p>Search a catalogue, inspect the product overview, and receive a transparent market decision based on observed demand, profit, risk, competition, and evidence confidence. If data is unavailable, MarketLens says so.</p></div>', unsafe_allow_html=True)
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Catalogue records", f"{coverage['total_records']:,}")
+    metric_cols[1].metric("Observed evidence", f"{coverage['coverage_percent']}%")
+    metric_cols[2].metric("Core evidence complete", f"{coverage['records_with_complete_core_evidence']:,}")
+    metric_cols[3].metric("Source", str(coverage['source_label'])[:22])
+
+    if scored.empty:
+        st.info("No catalogue is loaded yet. Upload the workbook or configure MARKETLENS_DATA_URL in Streamlit Cloud secrets. The app is ready to search once a real source is connected.")
+        return
+
+    if page == "Explore products":
+        st.markdown("<h2 class='section-title'>Explore products</h2><p class='small-note'>Search by name, SKU, brand, description, category, or sub-category. Select one result to open its full product overview.</p>", unsafe_allow_html=True)
+        query_col, category_col, verdict_col = st.columns([2.2, 1, 1])
+        with query_col:
+            query = st.text_input("Search", placeholder="Try: wireless earbuds, skincare, kitchen, SKU…")
+        with category_col:
+            category = st.selectbox("Category", categories)
+        with verdict_col:
+            verdict = st.selectbox("Decision", ["All verdicts", "GO", "CAUTION", "PASS"])
+        results = search_catalogue(scored, query, category, verdict, limit=100)
+        st.caption(f"Showing {len(results):,} matching products")
+        if results.empty:
+            st.warning("No matching products. Try a broader search or another category.")
+        else:
+            st.dataframe(results[["product_name", "brand", "main_category", "calculated_final_market_score", "calculated_product_verdict", "evidence_confidence"]].rename(columns={"product_name": "Product", "brand": "Brand", "main_category": "Category", "calculated_final_market_score": "Score", "calculated_product_verdict": "Decision", "evidence_confidence": "Confidence %"}), hide_index=True, use_container_width=True)
+            options = results["product_id"].astype(str).tolist()
+            chosen = st.selectbox("Open product overview", options, format_func=lambda key: str(results.loc[results["product_id"].astype(str) == key, "product_name"].iloc[0]))
+            selected = results[results["product_id"].astype(str) == chosen].iloc[0]
+            render_product(selected, coverage)
+            st.download_button("Download search results (CSV)", results.to_csv(index=False).encode("utf-8"), "marketlens-search-results.csv", "text/csv")
+    elif page == "Compare opportunities":
+        st.markdown("<h2 class='section-title'>Compare opportunities</h2><p class='small-note'>This ranking is calculated from the loaded source. It is not a promise of future sales.</p>", unsafe_allow_html=True)
+        ranking = scored.sort_values(["calculated_final_market_score", "evidence_confidence"], ascending=False).head(25)
+        st.dataframe(ranking[["product_name", "main_category", "calculated_final_market_score", "calculated_product_verdict", "evidence_confidence"]].rename(columns={"product_name": "Product", "main_category": "Category", "calculated_final_market_score": "Score", "calculated_product_verdict": "Decision", "evidence_confidence": "Confidence %"}), hide_index=True, use_container_width=True)
+        if not ranking.empty:
+            chart = px.bar(ranking.head(10), x="calculated_final_market_score", y="product_name", color="calculated_product_verdict", orientation="h", title="Top observed opportunities", labels={"calculated_final_market_score": "Market score", "product_name": "Product"})
+            st.plotly_chart(chart, use_container_width=True)
+    elif page == "Data source":
+        st.markdown("<h2 class='section-title'>Data source and freshness</h2><p class='small-note'>Connect a real CSV/XLSX source or configure a public data URL. MarketLens never labels generated demo records as live market data.</p>", unsafe_allow_html=True)
+        st.json(coverage)
+        st.download_button("Download normalized catalogue", scored.to_csv(index=False).encode("utf-8"), "marketlens-normalized-catalogue.csv", "text/csv")
+        st.info("For a public Streamlit deployment, add MARKETLENS_DATA_URL to Streamlit Cloud secrets and point it at an authorized, refreshable CSV/XLSX source. The source must include provenance and update metadata.")
     else:
-        trend_data = trends_df[trends_df["category"] == selected_category]
-    
-    fig = px.line(
-        trend_data,
-        x="date",
-        y=selected_metric,
-        title=f"{selected_metric.replace('_', ' ').title()} Trend",
-        markers=True,
-    )
-    fig.update_layout(height=400, hovermode='x unified')
-    st.plotly_chart(fig, use_container_width=True)
-    
-    st.markdown("---")
-    st.markdown("## 📊 Category Comparison")
-    
-    category_stats = trends_df.groupby("category")[selected_metric].mean().sort_values(ascending=False)
-    
-    fig = px.bar(
-        x=category_stats.index,
-        y=category_stats.values,
-        title=f"Average {selected_metric.replace('_', ' ').title()} by Category",
-        labels={'x': 'Category', 'y': selected_metric.replace('_', ' ').title()},
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        st.markdown("<h2 class='section-title'>Methodology</h2><p class='small-note'>The score is a decision aid, not a guarantee. Every displayed number is either observed from the source or calculated from observed inputs.</p>", unsafe_allow_html=True)
+        st.markdown("### Fixed decision formula")
+        st.latex(r"MarketScore = Demand \times 0.40 + Profit \times 0.30 - Risk \times 0.20 + CompetitionGap \times 0.10")
+        st.table(pd.DataFrame({"Dimension": ["Demand", "Profit", "Risk", "Competition Gap"], "Weight": ["40%", "30%", "20%", "10%"], "Interpretation": ["Sales, revenue, growth, reviews, rating, positive review share", "Margin, cost, fees, shipping, net profit, advertising efficiency", "Saturation, sellers, negative/neutral reviews, concentration, acquisition cost", "Competitor rating/price, unmet needs, sentiment, seller gap"]}))
+        st.markdown("### Verdicts")
+        st.write("**GO** means the score is at least 70. **CAUTION** means 45–69.99. **PASS** means below 45. Confidence is reported separately and falls when evidence is missing.")
+        st.warning("A catalogue identity is not the same as current market evidence. Connect authorized current sources before making purchasing, inventory, or launch decisions.")
 
-# ============================================================================
-# PROFILE PAGE
-# ============================================================================
 
-elif "👤" in page:
-    st.markdown("# 👤 User Profile")
-    st.markdown("Track your analysis history and manage settings.")
-    
-    st.markdown("---")
-    
-    tab1, tab2, tab3 = st.tabs(["📊 History", "⚙️ Settings", "📈 Statistics"])
-    
-    with tab1:
-        st.markdown("## Analysis History")
-        
-        if st.session_state.analysis_history:
-            history_df = pd.DataFrame(st.session_state.analysis_history)
-            st.dataframe(history_df, use_container_width=True)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                csv = history_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download as CSV",
-                    data=csv,
-                    file_name="analysis_history.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            with col2:
-                if st.button("🗑️ Clear History", use_container_width=True):
-                    st.session_state.analysis_history = []
-                    st.success("History cleared!")
-                    st.rerun()
-        else:
-            st.info("No analysis history yet. Start analyzing products!")
-    
-    with tab2:
-        st.markdown("## Settings")
-        st.markdown("### API Configuration")
-        st.info("Configure your DeepSeek API key in the sidebar for real sentiment analysis.")
-        st.markdown("### Data & Privacy")
-        st.markdown("""
-        - All data is stored locally in your browser
-        - Your API keys are never shared
-        - You can clear your history anytime
-        """)
-    
-    with tab3:
-        st.markdown("## Statistics")
-        
-        if st.session_state.analysis_history:
-            history = st.session_state.analysis_history
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Total Analyses", len(history))
-            with col2:
-                go_count = sum(1 for h in history if h.get("verdict") == "GO")
-                st.metric("GO Verdicts", go_count)
-            with col3:
-                caution_count = sum(1 for h in history if h.get("verdict") == "CAUTION")
-                st.metric("CAUTION Verdicts", caution_count)
-            with col4:
-                pass_count = sum(1 for h in history if h.get("verdict") == "PASS")
-                st.metric("PASS Verdicts", pass_count)
-        else:
-            st.info("No statistics yet.")
-
-# ============================================================================
-# RESEARCH PAGE
-# ============================================================================
-
-elif "📚" in page:
-    st.markdown("# 📚 Market Research")
-    st.markdown("Curated market insights and best practices.")
-    
-    st.markdown("---")
-    
-    tab1, tab2 = st.tabs(["📊 Market Overview", "🎯 Best Practices"])
-    
-    with tab1:
-        st.markdown("## Market Overview")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Products Analyzed", len(products_df))
-        with col2:
-            st.metric("Reviews Processed", len(reviews_df))
-        with col3:
-            st.metric("Categories", products_df["category"].nunique())
-        with col4:
-            st.metric("Avg Rating", f"{products_df['avg_rating'].mean():.1f}")
-        
-        st.markdown("---")
-        st.markdown("### 🌍 Category Performance")
-        
-        category_perf = products_df.groupby("category").agg({
-            "avg_rating": "mean",
-            "review_count": "mean",
-            "price": "mean",
-        }).round(2)
-        
-        st.dataframe(category_perf, use_container_width=True)
-    
-    with tab2:
-        st.markdown("## Best Practices")
-        
-        st.markdown("""
-        ### 1️⃣ Product Selection
-        - Focus on underserved niches
-        - Look for unmet customer needs
-        - Analyze competitor weaknesses
-        - Validate demand with market data
-        
-        ### 2️⃣ Listing Optimization
-        - Include primary keywords in title
-        - Address customer pain points
-        - Use high-quality images
-        - Competitive pricing strategy
-        
-        ### 3️⃣ Marketing Strategy
-        - Launch with competitive pricing
-        - Leverage micro-influencers
-        - Use paid advertising strategically
-        - Build email list
-        
-        ### 4️⃣ Risk Management
-        - Diversify across products
-        - Monitor regulatory changes
-        - Maintain cash reserves
-        - Develop backup suppliers
-        """)
-
-# ============================================================================
-# FOOTER
-# ============================================================================
-
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: #999; font-size: 12px; padding: 20px;">
-    <p>MarketLens AI v2.0 | Nanjing Tech University | OPC Intelligent Agent Innovation Track</p>
-    <p>🔗 <a href="https://www.marketlens-ai.com/">Website</a> | <a href="https://github.com/marketlens-ai">GitHub</a></p>
-</div>
-""", unsafe_allow_html=True)
+if __name__ == "__main__":
+    main()

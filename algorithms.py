@@ -1,211 +1,156 @@
+"""Evidence-led MarketLens scoring for the Streamlit application.
+
+The engine never substitutes invented defaults. Each component is calculated from
+available fields, while confidence reports how much of the evidence contract was observed.
+The baseline formula is fixed: Demand 40%, Profit 30%, Risk 20%, Competition Gap 10%.
 """
-Scoring Algorithms for MarketLens AI
-Perfect formulas for market opportunity analysis
-Python 3.14+ compatible
-"""
+from __future__ import annotations
 
-import pandas as pd
-from typing import Dict, Any
+from collections.abc import Mapping
+from typing import Any
 
+import math
 
-def normalize_score(value: float, min_val: float = 0, max_val: float = 100) -> float:
-    """Normalize a value to 0-100 scale."""
-    if max_val == min_val:
-        return 50.0
-    normalized = ((value - min_val) / (max_val - min_val)) * 100
-    return max(0, min(100, normalized))
+WEIGHTS = {"demand": 0.40, "profit": 0.30, "risk": 0.20, "competition_gap": 0.10}
+VERDICTS = {"GO": 70.0, "CAUTION": 45.0, "PASS": 0.0}
 
 
-def calculate_demand_score(product: Dict[str, Any]) -> float:
-    """
-    Calculate demand score (0-100).
-    
-    Formula: (Search_Volume × 0.35) + (Sales_Velocity × 0.40) + 
-             (Reviews × 0.15) + (Trend × 0.10)
-    """
-    search_volume = normalize_score(
-        product.get("search_volume_30d", 5000),
-        min_val=1000,
-        max_val=50000
-    )
-    
-    sales_velocity = normalize_score(
-        product.get("sales_velocity_weekly", 100),
-        min_val=10,
-        max_val=500
-    )
-    
-    reviews = normalize_score(
-        product.get("review_count", 1000),
-        min_val=100,
-        max_val=5000
-    )
-    
-    trend = product.get("trend_score", 60)
-    
-    demand_score = (search_volume * 0.35) + (sales_velocity * 0.40) + (reviews * 0.15) + (trend * 0.10)
-    
-    return round(max(0, min(100, demand_score)), 1)
+def _number(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
 
 
-def calculate_profit_score(product: Dict[str, Any]) -> float:
-    """
-    Calculate profit score (0-100).
-    
-    Formula: (Price_Competitiveness × 0.40) + (Rating × 0.35) + 
-             (Competition_Efficiency × 0.25)
-    """
-    # Price competitiveness (higher price = better margins, but lower demand)
-    price = product.get("price", 50)
-    price_score = normalize_score(price, min_val=10, max_val=300)
-    
-    # Rating (higher rating = better conversion)
-    rating = product.get("avg_rating", 4.0)
-    rating_score = normalize_score(rating, min_val=1.0, max_val=5.0)
-    
-    # Competition efficiency (fewer competitors = better margins)
-    competitor_count = product.get("competitor_count", 50)
-    competition_efficiency = normalize_score(
-        100 - competitor_count,
-        min_val=0,
-        max_val=100
-    )
-    
-    profit_score = (price_score * 0.40) + (rating_score * 0.35) + (competition_efficiency * 0.25)
-    
-    return round(max(0, min(100, profit_score)), 1)
+def _pct(value: Any) -> float | None:
+    """Normalize ratio-form values such as 0.78 and percent-form values such as 78."""
+    number = _number(value)
+    if number is None:
+        return None
+    if 0 <= number <= 1:
+        number *= 100
+    return max(0.0, min(100.0, number))
 
 
-def calculate_risk_score(product: Dict[str, Any]) -> float:
-    """
-    Calculate risk score (0-100).
-    Higher score = higher risk.
-    
-    Formula: (Market_Saturation × 0.50) + (Competitor_Penalty × 0.35) + 
-             (Rating_Risk × 0.15)
-    """
-    # Market saturation risk
-    market_saturation = product.get("market_saturation", 50)
-    saturation_score = normalize_score(market_saturation, min_val=0, max_val=100)
-    
-    # Competitor risk
-    competitor_count = product.get("competitor_count", 50)
-    competitor_penalty = normalize_score(competitor_count, min_val=10, max_val=200)
-    
-    # Rating risk (low rating = higher risk)
-    rating = product.get("avg_rating", 4.0)
-    rating_risk = 100 - normalize_score(rating, min_val=1.0, max_val=5.0)
-    
-    risk_score = (saturation_score * 0.50) + (competitor_penalty * 0.35) + (rating_risk * 0.15)
-    
-    return round(max(0, min(100, risk_score)), 1)
+def _cap(value: float) -> float:
+    return max(0.0, min(100.0, value))
 
 
-def calculate_competition_gap_score(gap_score_from_ai: float = 50) -> float:
-    """
-    Use AI-detected competition gap score.
-    
-    This comes from sentiment analysis of customer reviews.
-    """
-    return round(max(0, min(100, gap_score_from_ai)), 1)
+def _scale(value: Any, upper: float) -> float | None:
+    number = _number(value)
+    return None if number is None else _cap(number / upper * 100)
 
 
-def calculate_overall_score(
-    demand_score: float,
-    profit_score: float,
-    risk_score: float,
-    competition_gap_score: float
-) -> float:
-    """
-    Calculate overall market opportunity score.
-    
-    Formula: (Demand × 0.40) + (Profit × 0.30) - (Risk × 0.20) + 
-             (Competition_Gap × 0.10)
-    """
-    overall = (demand_score * 0.40) + (profit_score * 0.30) - (risk_score * 0.20) + (competition_gap_score * 0.10)
-    
-    return round(max(0, min(100, overall)), 1)
+def _weighted(parts: list[tuple[Any, float, Any]], missing: list[str]) -> tuple[float, int, int]:
+    total_weight = 0.0
+    score = 0.0
+    observed = 0
+    for value, weight, transform in parts:
+        number = transform(value) if callable(transform) else _number(value)
+        if number is None:
+            continue
+        score += _cap(number) * weight
+        total_weight += weight
+        observed += 1
+    return (_cap(score / total_weight) if total_weight else 0.0, observed, len(parts))
 
 
-def get_verdict(overall_score: float) -> str:
-    """Determine verdict based on overall score."""
-    if overall_score >= 75:
-        return "GO"
-    elif overall_score >= 50:
-        return "CAUTION"
-    else:
-        return "PASS"
+def calculate_market_score(product: Mapping[str, Any]) -> dict[str, Any]:
+    """Calculate a transparent MarketLens result from one normalized product row."""
+    missing: list[str] = []
+
+    demand_parts = [
+        (product.get("monthly_unit_sales"), 0.22, lambda v: _scale(v, 2000)),
+        (product.get("monthly_revenue"), 0.18, lambda v: _scale(v, 50000)),
+        (product.get("sales_growth_rate_30d"), 0.18, lambda v: _cap((_number(v) or 0) + 10) * 5 if _number(v) is not None else None),
+        (product.get("total_reviews_count"), 0.14, lambda v: _scale(v, 5000)),
+        (product.get("average_rating"), 0.14, lambda v: _scale(v, 5)),
+        (product.get("positive_review_percent"), 0.14, _pct),
+    ]
+    profit_margin = product.get("gross_margin_percent")
+    if _number(profit_margin) is None and _number(product.get("selling_price_usd")) and _number(product.get("unit_cost_usd")):
+        price = _number(product.get("selling_price_usd")) or 0
+        cost = _number(product.get("unit_cost_usd")) or 0
+        profit_margin = ((price - cost) / price * 100) if price > 0 else None
+    contribution_margin = None
+    price = _number(product.get("selling_price_usd"))
+    cost = _number(product.get("unit_cost_usd"))
+    if price and price > 0 and cost is not None:
+        fee = (_pct(product.get("platform_fee_percent")) or 0) * price / 100
+        shipping = _number(product.get("shipping_cost_per_unit_usd")) or 0
+        contribution_margin = (price - cost - fee - shipping) / price * 100
+    net_margin = None
+    net_profit = _number(product.get("net_profit_per_unit_usd"))
+    if net_profit is not None and price and price > 0:
+        net_margin = net_profit / price * 100
+    ad_efficiency = None
+    acos = _pct(product.get("advertising_cost_of_sale"))
+    if acos is not None:
+        ad_efficiency = 100 - acos
+    profit_parts = [
+        (profit_margin, 0.22, _pct), (contribution_margin, 0.22, _pct), (net_margin, 0.18, lambda v: None if _number(v) is None else _cap((_number(v) or 0) * 2)),
+        (product.get("monthly_revenue"), 0.10, lambda v: _scale(v, 50000)), (ad_efficiency, 0.10, _pct),
+        (product.get("advertising_spend_usd"), 0.06, lambda v: (100 - (_number(v) or 0) / (_number(product.get("monthly_revenue")) or 1) * 100) if _number(product.get("monthly_revenue")) else None),
+        (product.get("ad_click_through_rate"), 0.06, lambda v: _scale(_pct(v), 5)), (product.get("ad_conversion_rate"), 0.06, lambda v: _scale(_pct(v), 15)),
+    ]
+    risk_parts = [
+        (product.get("market_saturation_score"), 0.28, _pct), (product.get("total_active_sellers"), 0.16, lambda v: _scale(v, 500)),
+        (product.get("negative_review_percent"), 0.20, lambda v: None if _pct(v) is None else _cap((_pct(v) or 0) * 2)), (product.get("neutral_review_percent"), 0.08, _pct),
+        (product.get("top_3_sellers_market_share_percent"), 0.14, _pct), (acos, 0.14, _pct),
+    ]
+    rating_gap = None
+    rating = _number(product.get("average_rating")); competitor_rating = _number(product.get("average_competitor_rating"))
+    if rating is not None and competitor_rating is not None:
+        rating_gap = _cap(50 + (rating - competitor_rating) * 25)
+    price_gap = _number(product.get("price_gap_vs_average_competitor_percent"))
+    needs_gap = 100 if str(product.get("unmet_customer_needs") or "").strip() else 60 if str(product.get("top_customer_pain_points") or "").strip() else None
+    sentiment = _pct(product.get("sentiment_score_overall"))
+    if sentiment is None:
+        sentiment = _pct(product.get("positive_review_percent"))
+    competition_parts = [
+        (rating_gap, 0.25, _number), (None if price_gap is None else 50 - price_gap, 0.20, _number), (needs_gap, 0.20, _number),
+        (sentiment, 0.15, _number), (None if _number(product.get("total_active_sellers")) is None else 100 - (_scale(product.get("total_active_sellers"), 500) or 0), 0.10, _number),
+        (product.get("positive_review_percent"), 0.10, _pct),
+    ]
+
+    component_parts = {"demand": demand_parts, "profit": profit_parts, "risk": risk_parts, "competition_gap": competition_parts}
+    scores: dict[str, float] = {}
+    observed_total = 0
+    expected_total = 0
+    for name, parts in component_parts.items():
+        score, observed, expected = _weighted(parts, missing)
+        scores[name] = round(score, 2)
+        observed_total += observed
+        expected_total += expected
+        if observed == 0:
+            missing.append(name)
+
+    final_score = round(_cap(scores["demand"] * WEIGHTS["demand"] + scores["profit"] * WEIGHTS["profit"] - scores["risk"] * WEIGHTS["risk"] + scores["competition_gap"] * WEIGHTS["competition_gap"]), 2)
+    confidence = round(observed_total / expected_total * 100, 2) if expected_total else 0.0
+    verdict = "GO" if final_score >= 70 else "CAUTION" if final_score >= 45 else "PASS"
+    category = str(product.get("main_category") or "").lower()
+    risk_adjustment = 7 if any(term in category for term in ("beauty", "cosmetic", "personal care")) else 6 if any(term in category for term in ("electronics", "computer", "mobile")) else 10 if any(term in category for term in ("food", "beverage", "grocery")) else 4 if any(term in category for term in ("fashion", "apparel", "clothing", "shoes")) else 0
+    forecast_score = round(_cap(scores["risk"] + risk_adjustment), 2) if observed_total else None
+    forecast_level = "UNKNOWN" if forecast_score is None else "HIGH" if forecast_score >= 75 else "ELEVATED" if forecast_score >= 55 else "MODERATE" if forecast_score >= 30 else "LOW"
+    return {
+        "scoring_version": "marketlens-streamlit-1.2", "demand_score": scores["demand"], "profit_score": scores["profit"], "risk_score": scores["risk"],
+        "competition_gap_score": scores["competition_gap"], "final_market_score": final_score, "confidence_score": confidence, "verdict": verdict,
+        "risk_forecast_score": forecast_score, "risk_forecast_level": forecast_level, "category_risk_adjustment": risk_adjustment,
+        "observed_metric_count": observed_total, "expected_metric_count": expected_total,
+        "missing_evidence": missing, "rationale": f"Fixed weighting: Demand 40%, Profit 30%, Risk 20%, Competition Gap 10%. {expected_total - observed_total} component inputs remain unavailable." if expected_total else "No scoring evidence is available.",
+    }
+
+
+def calculate_all_scores(product: Mapping[str, Any], gap_score_from_ai: float | None = None) -> dict[str, Any]:
+    """Backward-compatible wrapper for existing Streamlit callers."""
+    row = dict(product)
+    if gap_score_from_ai is not None and row.get("sentiment_score_overall") in (None, ""):
+        row["sentiment_score_overall"] = gap_score_from_ai
+    return calculate_market_score(row)
 
 
 def get_verdict_explanation(verdict: str, overall_score: float) -> str:
-    """Get explanation for the verdict."""
-    explanations = {
-        "GO": f"Strong market opportunity detected (Score: {overall_score}/100). This product shows excellent potential with strong demand, good profit margins, and manageable risks. Proceed with confidence.",
-        "CAUTION": f"Moderate market opportunity (Score: {overall_score}/100). This product has potential but requires careful risk management. Consider market conditions and competition before proceeding.",
-        "PASS": f"High risk detected (Score: {overall_score}/100). This product faces significant market challenges. Consider pivoting to a different product or market segment.",
-    }
-    return explanations.get(verdict, "Unable to determine verdict.")
-
-
-def calculate_all_scores(product: Dict[str, Any], gap_score_from_ai: float = 50) -> Dict[str, Any]:
-    """
-    Calculate all scores and verdicts for a product.
-    
-    Args:
-        product: Product dictionary with all metrics
-        gap_score_from_ai: Competition gap score from sentiment analysis
-        
-    Returns:
-        Dictionary with all scores and verdict
-    """
-    demand_score = calculate_demand_score(product)
-    profit_score = calculate_profit_score(product)
-    risk_score = calculate_risk_score(product)
-    competition_gap_score = calculate_competition_gap_score(gap_score_from_ai)
-    overall_score = calculate_overall_score(demand_score, profit_score, risk_score, competition_gap_score)
-    
-    verdict = get_verdict(overall_score)
-    verdict_explanation = get_verdict_explanation(verdict, overall_score)
-    
-    return {
-        "demand_score": demand_score,
-        "profit_score": profit_score,
-        "risk_score": risk_score,
-        "competition_gap_score": competition_gap_score,
-        "overall_score": overall_score,
-        "verdict": verdict,
-        "verdict_explanation": verdict_explanation,
-    }
-
-
-def get_score_interpretation(score: float) -> str:
-    """Get interpretation of a score."""
-    if score >= 80:
-        return "Excellent"
-    elif score >= 60:
-        return "Good"
-    elif score >= 40:
-        return "Fair"
-    else:
-        return "Poor"
-
-
-if __name__ == "__main__":
-    # Test the algorithms
-    test_product = {
-        "product_name": "Wireless Earbuds Pro",
-        "price": 89.99,
-        "avg_rating": 4.3,
-        "review_count": 2500,
-        "search_volume_30d": 15000,
-        "sales_velocity_weekly": 150,
-        "trend_score": 75,
-        "competitor_count": 45,
-        "market_saturation": 65,
-    }
-    
-    results = calculate_all_scores(test_product, gap_score_from_ai=72)
-    
-    print("Test Product Scores:")
-    for key, value in results.items():
-        print(f"  {key}: {value}")
+    return {"GO": f"GO — the observed baseline score is {overall_score:.1f}/100; validate suppliers and regulations before committing inventory.", "CAUTION": f"CAUTION — the observed baseline score is {overall_score:.1f}/100; investigate the missing evidence and market risks.", "PASS": f"PASS — the observed baseline score is {overall_score:.1f}/100; current evidence does not support a confident launch decision."}.get(verdict, "Decision unavailable.")
