@@ -1,169 +1,175 @@
-"""MarketLens AI public search-first Streamlit application."""
+"""MarketLens AI: live provider search, normalization, AI analytics, dashboard, and decisions."""
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import pandas as pd
 import plotly.express as px
-import requests
 import streamlit as st
 
-from algorithms import WEIGHTS, get_verdict_explanation
-from marketlens_data import add_calculated_scores, coverage_summary, load_catalogue, search_catalogue, search_open_beauty_facts
+from algorithms import WEIGHTS
+from marketlens_ai import analyze_product
+from marketlens_data import add_calculated_scores, load_catalogue, normalize_live_records, search_catalogue
+from marketlens_providers import PROVIDERS, fetch_all, normalize_records
+from marketlens_simulation import scenario_grid, simulate_profit
 
-st.set_page_config(page_title="MarketLens AI", page_icon="◎", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="MarketLens AI", page_icon="◎", layout="wide", initial_sidebar_state="expanded")
 st.markdown("""
 <style>
-:root { --ink:#101828; --muted:#667085; --line:#e4e7ec; --blue:#175cd3; --blue-soft:#eff8ff; }
-.block-container { max-width: 1360px; padding-top: 2rem; padding-bottom: 4rem; }
-[data-testid="stSidebar"] { background:#f8fafc; border-right:1px solid #eaecf0; }
-.hero { border:1px solid #d0d5dd; border-radius:24px; padding:32px; background:radial-gradient(circle at 90% 10%,#dbeafe 0,transparent 35%),linear-gradient(135deg,#fff,#f8fbff); margin-bottom:24px; }
-.hero h1 { font-size:clamp(2rem,4vw,3.6rem); letter-spacing:-.06em; color:var(--ink); margin:8px 0; }
-.hero p { color:var(--muted); max-width:760px; font-size:1.05rem; line-height:1.7; }
-.pill { display:inline-block; border:1px solid #b2ddff; background:var(--blue-soft); color:var(--blue); border-radius:999px; padding:5px 10px; font-size:.78rem; font-weight:700; }
-.verdict { border-radius:16px; padding:16px 20px; font-weight:700; margin:10px 0 18px; }
+:root { --ink:#0f172a; --muted:#64748b; --line:#e2e8f0; --blue:#2563eb; --navy:#0b1220; }
+.block-container { max-width: 1440px; padding: 1.4rem 2rem 4rem; }
+[data-testid="stSidebar"] { background:#0b1220; }
+[data-testid="stSidebar"] * { color:#dbeafe !important; }
+.hero { border-radius:26px; padding:38px; color:white; background:linear-gradient(135deg,#0b1220 0%,#102d5c 55%,#2563eb 100%); margin-bottom:24px; box-shadow:0 20px 50px #0f172a22; }
+.hero h1 { font-size:clamp(2rem,4vw,4rem); letter-spacing:-.065em; margin:8px 0 10px; }
+.hero p { color:#bfdbfe; max-width:780px; font-size:1.05rem; line-height:1.7; }
+.pill { display:inline-block; border:1px solid #93c5fd66; background:#ffffff14; border-radius:999px; padding:6px 12px; font-size:.75rem; letter-spacing:.1em; font-weight:700; }
+.card { border:1px solid var(--line); border-radius:18px; padding:18px; background:white; }
+.verdict { border-radius:16px; padding:18px 22px; font-weight:800; font-size:1.15rem; margin:8px 0 18px; }
 .verdict-go { background:#ecfdf3; color:#027a48; border:1px solid #abefc6; }
 .verdict-caution { background:#fffaeb; color:#b54708; border:1px solid #fedf89; }
 .verdict-pass { background:#fef3f2; color:#b42318; border:1px solid #fecdca; }
-.small-note { color:var(--muted); font-size:.83rem; line-height:1.55; }
-[data-testid="stMetric"] { background:#fff; border:1px solid var(--line); border-radius:16px; padding:16px; }
+.small { color:var(--muted); font-size:.83rem; line-height:1.55; }
+[data-testid="stMetric"] { border:1px solid var(--line); border-radius:16px; padding:14px; background:#fff; }
 </style>
 """, unsafe_allow_html=True)
 
 
-def source_config() -> str:
+def _secret(name: str, default: str = "") -> str:
     try:
-        return str(st.secrets.get("MARKETLENS_DATA_URL", os.getenv("MARKETLENS_DATA_URL", "")))
+        return str(st.secrets.get(name, os.getenv(name, default)))
     except Exception:
-        return os.getenv("MARKETLENS_DATA_URL", "")
+        return os.getenv(name, default)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def live_search(query: str, providers: tuple[str, ...]):
+    results = fetch_all(query, list(providers))
+    records = normalize_records(results)
+    return results, records
 
 
 def verdict_class(verdict: str) -> str:
     return {"GO": "verdict-go", "CAUTION": "verdict-caution", "PASS": "verdict-pass"}.get(verdict, "verdict-pass")
 
 
-def display_number(value: object, suffix: str = "") -> str:
-    if pd.isna(value) if not isinstance(value, str) else not value.strip():
+def metric_value(value: Any, suffix: str = "") -> str:
+    if value is None or pd.isna(value) if not isinstance(value, str) else not value.strip():
         return "Unavailable"
     return f"{value:,.2f}{suffix}" if isinstance(value, float) else f"{value}{suffix}"
 
 
-def render_score_card(row: pd.Series) -> None:
-    verdict = str(row.get("calculated_product_verdict", "PASS"))
-    score = float(row.get("calculated_final_market_score", 0) or 0)
-    confidence = float(row.get("evidence_confidence", 0) or 0)
-    st.markdown(f'<div class="verdict {verdict_class(verdict)}"><span>{verdict}</span> · {score:.1f}/100 · Evidence confidence {confidence:.1f}%</div>', unsafe_allow_html=True)
-    st.caption(get_verdict_explanation(verdict, score))
-    chart = pd.DataFrame({"Component": ["Demand 40%", "Profit 30%", "Risk 20%", "Competition gap 10%"], "Score": [row.get("calculated_demand_score", 0), row.get("calculated_profit_score", 0), row.get("calculated_risk_score", 0), row.get("calculated_competition_gap_score", 0)]})
-    st.bar_chart(chart.set_index("Component"), height=220, color="#175cd3")
-    st.markdown(f"**Method:** fixed weights — Demand {WEIGHTS['demand']:.0%}, Profit {WEIGHTS['profit']:.0%}, Risk {WEIGHTS['risk']:.0%}, Competition Gap {WEIGHTS['competition_gap']:.0%}.")
+def render_decision(row: pd.Series, raw: dict[str, Any] | None = None) -> dict[str, Any]:
+    product = {**(raw or {}), **row.to_dict()}
+    analysis = analyze_product(product)
+    score = analysis["score"]
+    verdict = score["verdict"]
+    st.markdown(f'<div class="verdict {verdict_class(verdict)}">{verdict} · {score["final_market_score"]:.1f}/100 · Evidence confidence {score["confidence_score"]:.1f}%</div>', unsafe_allow_html=True)
+    st.caption({"GO": "Strong observed opportunity signal. Validate suppliers, regulations, and unit economics before committing inventory.", "CAUTION": "Mixed or incomplete evidence. Investigate demand, margin, and risk signals before launch.", "PASS": "Current evidence does not support a confident launch decision. This is not a claim that the product cannot sell."}[verdict])
+    chart = pd.DataFrame({"Dimension": ["Demand", "Profit", "Risk", "Competition gap"], "Score": [score["demand_score"], score["profit_score"], score["risk_score"], score["competition_gap_score"]]})
+    st.plotly_chart(px.bar(chart, x="Dimension", y="Score", range_y=[0, 100], color="Dimension", title="Fixed 40/30/20/10 score components"), use_container_width=True)
+    st.write(f"**AI analytics:** {analysis['ai_method']} · **Sentiment:** {analysis['sentiment']['label']} · **Trend:** {analysis['trend_signal']} · **Risk outlook:** {analysis['risk_level']}")
+    return analysis
 
 
-def render_product(row: pd.Series, coverage: dict[str, object]) -> None:
-    st.markdown(f"## {row.get('product_name', 'Unnamed product')}")
-    st.caption(f"{row.get('brand') or 'Brand unavailable'} · {row.get('main_category') or 'Category unavailable'} · ID {row.get('product_id')}")
-    tabs = st.tabs(["Decision", "Product overview", "Market signals", "Provenance"])
+def render_product(row: pd.Series, raw: dict[str, Any] | None = None) -> None:
+    product = {**(raw or {}), **row.to_dict()}
+    st.markdown(f"### {product.get('product_name', 'Unnamed product')}")
+    st.caption(f"{product.get('brand') or 'Brand unavailable'} · {product.get('main_category') or 'Category unavailable'} · {product.get('provider') or 'Managed catalogue'}")
+    tabs = st.tabs(["Decision", "Overview", "Market evidence", "Profit simulation", "Provenance"])
     with tabs[0]:
-        render_score_card(row)
-        if row.get("calculated_product_verdict") == "PASS":
-            st.warning("PASS means the available evidence does not support a confident launch decision. It is not a claim that the product cannot sell.")
+        render_decision(row, raw)
     with tabs[1]:
-        st.write(row.get("product_description") or "No product description was supplied.")
-        left, right = st.columns(2)
-        with left:
-            st.metric("Selling price", display_number(row.get("selling_price_usd"), f" {row.get('currency') or 'USD'}"))
-            st.metric("Monthly revenue", display_number(row.get("monthly_revenue"), " USD"))
-            st.metric("Average rating", display_number(row.get("average_rating"), " / 5"))
-        with right:
-            st.metric("Monthly unit sales", display_number(row.get("monthly_unit_sales")))
-            st.metric("Net profit / unit", display_number(row.get("net_profit_per_unit_usd"), " USD"))
-            st.metric("Active sellers", display_number(row.get("total_active_sellers")))
+        st.write(product.get("product_description") or "No product description supplied.")
+        a, b, c, d = st.columns(4)
+        a.metric("Price", metric_value(product.get("selling_price_usd"), " USD"))
+        b.metric("Rating", metric_value(product.get("average_rating"), " / 5"))
+        c.metric("Reviews", metric_value(product.get("total_reviews_count")))
+        d.metric("Providers", metric_value(product.get("provider_count"), " sources"))
     with tabs[2]:
-        signals = pd.DataFrame({"Signal": ["30-day sales growth", "Positive reviews", "Negative reviews", "Saturation", "Competitor price gap", "Customer pain points", "Unmet needs"], "Observed value": [display_number(row.get("sales_growth_rate_30d"), "%"), display_number(row.get("positive_review_percent"), "%"), display_number(row.get("negative_review_percent"), "%"), display_number(row.get("market_saturation_score")), display_number(row.get("price_gap_vs_average_competitor_percent"), "%"), row.get("top_customer_pain_points") or "Unavailable", row.get("unmet_customer_needs") or "Unavailable"]})
-        st.dataframe(signals, hide_index=True, use_container_width=True)
-        st.info("Signals are displayed only when present in the source. Identity-only fallback results intentionally show commercial metrics as unavailable.")
+        st.dataframe(pd.DataFrame({"Signal": ["Sentiment", "Trend", "Risk outlook", "Observed fields", "Provider count"], "Value": [str(analyze_product(product)["sentiment"]), analyze_product(product)["trend_signal"], analyze_product(product)["risk_level"], ", ".join(product.get("observed_fields", [])) or "Unavailable", product.get("provider_count", 1)]}), hide_index=True, use_container_width=True)
+        st.info("Provider values are displayed as observed. Missing commercial fields remain unavailable and are not guessed.")
     with tabs[3]:
-        st.write(f"**Source:** {coverage['source_label']}")
-        st.write(f"**Loaded at:** {coverage['loaded_at'] or 'Unavailable'}")
-        st.write(f"**Source URL:** {coverage['source_url'] or 'Not supplied'}")
-        st.write(f"**Product update:** {row.get('last_updated_timestamp') or 'Not supplied'}")
-        st.write("Source-supplied component scores and verdicts are reference fields only; the displayed decision is recalculated by MarketLens.")
+        st.caption("Scenario outputs are sensitivity simulations, not guaranteed forecasts.")
+        scenarios = scenario_grid(product)
+        st.dataframe(pd.DataFrame(scenarios)[["Scenario", "units", "revenue", "net_profit", "net_margin_percent", "break_even_units"]], hide_index=True, use_container_width=True)
+        st.plotly_chart(px.bar(pd.DataFrame(scenarios), x="Scenario", y="net_profit", color="Scenario", title="Scenario net profit"), use_container_width=True)
+    with tabs[4]:
+        st.write(f"**Source provider:** {product.get('provider') or 'Managed catalogue'}")
+        st.write(f"**All providers matched:** {', '.join(product.get('providers', [])) or product.get('provider', 'Managed source')}")
+        st.write(f"**Source URL:** {product.get('source_url') or 'Not supplied'}")
+        st.write(f"**Provider record ID:** {product.get('provider_product_id') or product.get('product_id')}")
+        st.write(f"**Fetched/updated:** {product.get('last_updated_timestamp') or 'Fetched live; provider timestamp unavailable'}")
 
 
 def main() -> None:
     with st.sidebar:
         st.markdown("## ◎ MarketLens AI")
-        st.caption("Public product intelligence")
-        page = st.radio("Navigate", ["Explore products", "Compare opportunities", "Data source", "Methodology"], label_visibility="collapsed")
+        st.caption("Live product intelligence")
+        page = st.radio("Workspace", ["Live search", "Compare", "Simulation", "API health", "Methodology"], label_visibility="collapsed")
         st.divider()
-        st.caption("Catalogue data is backend-managed. Public file uploads are disabled.")
-        st.caption("Free fallback: Open Beauty Facts identity search when the managed catalogue has no match.")
+        st.markdown("**Live providers**")
+        default = ["DummyJSON", "Fake Store API", "Open Beauty Facts", "eBay Browse API", "Keepa API", "Shopify Storefront API"]
+        selected = [name for name in default if st.checkbox(name, value=name in {"DummyJSON", "Fake Store API", "Open Beauty Facts"}, key=f"provider_{name}")]
         st.divider()
-        st.caption("Current-data claims require a source URL and update timestamp. Identity-only records remain clearly marked.")
+        st.caption("Free providers work without keys. eBay, Keepa, Shopify, and DeepSeek activate only when their credentials are configured in Streamlit Secrets.")
 
-    configured_url = source_config()
-    try:
-        frame = load_catalogue(configured_url)
-    except Exception as error:
-        st.error(f"The backend catalogue could not be loaded: {error}")
-        frame = load_catalogue()
-    scored = add_calculated_scores(frame)
-    coverage = coverage_summary(scored)
-    categories = ["All categories"] + sorted(str(item) for item in scored["main_category"].dropna().unique()) if not scored.empty else ["All categories"]
+    st.markdown('<div class="hero"><span class="pill">LIVE PRODUCT APIs · AI ANALYTICS · DECISION SUPPORT</span><h1>Know what to launch next.</h1><p>MarketLens combines live product discovery, provider normalization, transparent analytics, profitability scenarios, and a GO · CAUTION · PASS decision in one focused workspace.</p></div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="hero"><span class="pill">SOURCE-AWARE PRODUCT INTELLIGENCE</span><h1>Find products you can explain.</h1><p>Search a backend-managed catalogue, inspect the product overview, and receive a transparent market decision based on observed demand, profit, risk, competition, and evidence confidence.</p></div>', unsafe_allow_html=True)
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Catalogue records", f"{coverage['total_records']:,}")
-    metric_cols[1].metric("Observed evidence", f"{coverage['coverage_percent']}%")
-    metric_cols[2].metric("Core evidence complete", f"{coverage['records_with_complete_core_evidence']:,}")
-    metric_cols[3].metric("Source", str(coverage['source_label'])[:22])
-
-    if page == "Explore products":
-        st.markdown("<h2>Explore products</h2><p class='small-note'>Search by name, SKU, brand, description, category, or sub-category. If the managed catalogue has no match, MarketLens checks the free Open Beauty Facts API.</p>", unsafe_allow_html=True)
-        query_col, category_col, verdict_col = st.columns([2.2, 1, 1])
-        with query_col:
-            query = st.text_input("Search", placeholder="Try: wireless earbuds, skincare, kitchen, SKU…")
-        with category_col:
-            category = st.selectbox("Category", categories)
-        with verdict_col:
-            verdict = st.selectbox("Decision", ["All verdicts", "GO", "CAUTION", "PASS"])
-        results = search_catalogue(scored, query, category, verdict, limit=100)
-        source_for_result = coverage
-        if results.empty and query.strip() and category == "All categories" and verdict == "All verdicts":
-            try:
-                fallback = add_calculated_scores(search_open_beauty_facts(query, limit=25))
-                if not fallback.empty:
-                    results, source_for_result = fallback, coverage_summary(fallback)
-                    st.info("No managed-catalogue match. Showing identity results from the free Open Beauty Facts API; commercial evidence is unavailable unless explicitly supplied by a source.")
-            except requests.RequestException:
-                st.warning("The free fallback source is temporarily unavailable. Try again later or search another term.")
-        st.caption(f"Showing {len(results):,} matching products")
-        if results.empty:
-            st.warning("No matching products. Try a broader search or another category.")
-        else:
-            table = results[["product_name", "brand", "main_category", "calculated_final_market_score", "calculated_product_verdict", "evidence_confidence"]].rename(columns={"product_name": "Product", "brand": "Brand", "main_category": "Category", "calculated_final_market_score": "Score", "calculated_product_verdict": "Decision", "evidence_confidence": "Confidence %"})
-            st.dataframe(table, hide_index=True, use_container_width=True)
-            options = results["product_id"].astype(str).tolist()
-            chosen = st.selectbox("Open product overview", options, format_func=lambda key: str(results.loc[results["product_id"].astype(str) == key, "product_name"].iloc[0]))
-            render_product(results[results["product_id"].astype(str) == chosen].iloc[0], source_for_result)
-            st.download_button("Download search results (CSV)", results.to_csv(index=False).encode("utf-8"), "marketlens-search-results.csv", "text/csv")
-    elif page == "Compare opportunities":
-        st.markdown("<h2>Compare opportunities</h2><p class='small-note'>This ranking is calculated from the backend-managed source and is not a promise of future sales.</p>", unsafe_allow_html=True)
-        ranking = scored.sort_values(["calculated_final_market_score", "evidence_confidence"], ascending=False).head(25)
-        st.dataframe(ranking[["product_name", "main_category", "calculated_final_market_score", "calculated_product_verdict", "evidence_confidence"]].rename(columns={"product_name": "Product", "main_category": "Category", "calculated_final_market_score": "Score", "calculated_product_verdict": "Decision", "evidence_confidence": "Confidence %"}), hide_index=True, use_container_width=True)
-        if not ranking.empty:
-            st.plotly_chart(px.bar(ranking.head(10), x="calculated_final_market_score", y="product_name", color="calculated_product_verdict", orientation="h", title="Top observed opportunities"), use_container_width=True)
-    elif page == "Data source":
-        st.markdown("<h2>Data source and freshness</h2><p class='small-note'>The catalogue is loaded by the backend from the repository or MARKETLENS_DATA_URL. Visitors cannot upload files. A free Open Beauty Facts lookup is used only when a search misses the managed catalogue.</p>", unsafe_allow_html=True)
-        st.json(coverage)
-        st.info("For Streamlit Community Cloud, set MARKETLENS_DATA_URL in Secrets to an authorized, refreshable CSV/XLSX source containing provenance and update timestamps. Open Beauty Facts is free and identity-focused; it is not a substitute for live sales, price, advertising, or competitor evidence.")
+    if page == "Live search":
+        query = st.text_input("Search products across live providers", placeholder="Try: wireless earbuds, skincare, running shoes…")
+        if not query.strip():
+            st.info("Enter a product or category to query the selected live providers.")
+            return
+        with st.spinner("Fetching and normalizing live provider data…"):
+            results, raw_records = live_search(query, tuple(selected))
+        normalized = normalize_live_records(raw_records, f"Live providers: {', '.join(selected)}")
+        scored = add_calculated_scores(normalized)
+        st.caption(f"{len(raw_records)} normalized products from {sum(item.status == 'ok' for item in results)} working provider(s)")
+        if scored.empty:
+            st.warning("No products were returned. Try another query or enable more providers.")
+            return
+        st.dataframe(scored[["product_name", "brand", "main_category", "calculated_final_market_score", "calculated_product_verdict", "evidence_confidence"]].rename(columns={"product_name": "Product", "brand": "Brand", "main_category": "Category", "calculated_final_market_score": "Score", "calculated_product_verdict": "Decision", "evidence_confidence": "Confidence %"}), hide_index=True, use_container_width=True)
+        chosen = st.selectbox("Open product intelligence", scored["product_id"].astype(str).tolist(), format_func=lambda key: str(scored.loc[scored["product_id"].astype(str) == key, "product_name"].iloc[0]))
+        selected_row = scored[scored["product_id"].astype(str) == chosen].iloc[0]
+        raw = next((record for record in raw_records if record.get("provider_product_id") == chosen), None)
+        render_product(selected_row, raw)
+    elif page == "Compare":
+        query = st.text_input("Search a comparison set", placeholder="Try: laptops, handbags, moisturizer…")
+        if query.strip():
+            _, records = live_search(query, tuple(selected))
+            scored = add_calculated_scores(normalize_live_records(records, "Live provider comparison"))
+            if not scored.empty:
+                st.plotly_chart(px.scatter(scored, x="calculated_demand_score", y="calculated_profit_score", size="evidence_confidence", color="calculated_product_verdict", hover_name="product_name", title="Demand vs profit opportunity map", labels={"calculated_demand_score": "Demand score", "calculated_profit_score": "Profit score"}), use_container_width=True)
+                st.dataframe(scored[["product_name", "main_category", "calculated_final_market_score", "calculated_product_verdict", "evidence_confidence"]].sort_values("calculated_final_market_score", ascending=False), hide_index=True, use_container_width=True)
+    elif page == "Simulation":
+        st.markdown("### Profitability simulation")
+        st.caption("Select a live product first in Live search, or enter a scenario manually.")
+        units = st.number_input("Monthly units", min_value=1, value=500, step=50)
+        price = st.number_input("Selling price (USD)", min_value=0.01, value=29.99, step=1.0)
+        cost = st.number_input("Unit cost (USD)", min_value=0.0, value=12.0, step=1.0)
+        ads = st.number_input("Monthly advertising spend (USD)", min_value=0.0, value=500.0, step=50.0)
+        fee = st.slider("Platform fee (%)", 0.0, 40.0, 15.0)
+        shipping = st.number_input("Shipping per unit (USD)", min_value=0.0, value=2.0, step=0.5)
+        simulation = simulate_profit({}, int(units), price, cost, ads, fee, shipping)
+        a, b, c = st.columns(3)
+        a.metric("Revenue", f"${simulation['revenue']:,.2f}")
+        b.metric("Net profit", f"${simulation['net_profit']:,.2f}")
+        c.metric("Break-even units", f"{simulation['break_even_units']:,.0f}")
+    elif page == "API health":
+        st.markdown("### Provider health and configuration")
+        rows = []
+        for name in ["DummyJSON", "Fake Store API", "Open Beauty Facts", "eBay Browse API", "Keepa API", "Shopify Storefront API"]:
+            configured = name in {"DummyJSON", "Fake Store API", "Open Beauty Facts"} or (name == "eBay Browse API" and bool(_secret("EBAY_OAUTH_TOKEN"))) or (name == "Keepa API" and bool(_secret("KEEPA_API_KEY"))) or (name == "Shopify Storefront API" and bool(_secret("SHOPIFY_STOREFRONT_URL")))
+            rows.append({"Provider": name, "Status": "Ready" if configured else "Optional / not configured", "Role": PROVIDERS[name].__doc__ or "Provider adapter"})
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.info("Fake Store API and DummyJSON are useful integration sources, not real market intelligence. eBay and Keepa are the production marketplace connectors once authorized credentials and usage plans are available.")
     else:
-        st.markdown("<h2>Methodology</h2><p class='small-note'>Every displayed number is either observed from the source or calculated from observed inputs. Missing data remains unavailable.</p>", unsafe_allow_html=True)
-        st.markdown("### Fixed decision formula")
+        st.markdown("### Five-layer architecture")
+        st.markdown("**1. Live Product APIs** — DummyJSON, Fake Store API, Open Beauty Facts, and optional eBay/Keepa/Shopify adapters. **2. Integration & Normalization** — common product schema, deduplication, provider evidence, timestamps, and failure isolation. **3. AI Analytics** — deterministic sentiment/trend/risk fallback with optional DeepSeek JSON analysis. **4. Dashboard** — search, comparison map, provider health, evidence, and profitability scenarios. **5. Decision Support** — fixed Demand 40%, Profit 30%, Risk 20%, Competition Gap 10% scoring with GO, CAUTION, PASS thresholds.")
         st.latex(r"MarketScore = Demand \times 0.40 + Profit \times 0.30 - Risk \times 0.20 + CompetitionGap \times 0.10")
-        st.table(pd.DataFrame({"Dimension": ["Demand", "Profit", "Risk", "Competition Gap"], "Weight": ["40%", "30%", "20%", "10%"], "Interpretation": ["Sales, revenue, growth, reviews, rating, positive review share", "Margin, cost, fees, shipping, net profit, advertising efficiency", "Saturation, sellers, negative/neutral reviews, concentration, acquisition cost", "Competitor rating/price, unmet needs, sentiment, seller gap"]}))
-        st.write("**GO** means at least 70. **CAUTION** means 45–69.99. **PASS** means below 45. Confidence is reported separately and falls when evidence is missing.")
-        st.warning("A product identity is not the same as current market evidence. Connect authorized current sources before making purchasing, inventory, or launch decisions.")
+        st.warning("Live provider data varies in coverage and freshness. A decision is a research aid, not a guarantee of sales, profit, or compliance.")
 
 
 if __name__ == "__main__":

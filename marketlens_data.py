@@ -1,4 +1,4 @@
-"""Data loading, normalization, and free-source fallback for MarketLens AI."""
+"""MarketLens data loading, normalization, live-provider mapping, and scoring."""
 from __future__ import annotations
 
 from io import BytesIO
@@ -12,7 +12,6 @@ from algorithms import calculate_market_score
 
 ROOT = Path(__file__).resolve().parent
 OPEN_BEAUTY_FACTS_SEARCH = "https://world.openbeautyfacts.org/cgi/search.pl"
-OPEN_BEAUTY_FACTS_HOME = "https://world.openbeautyfacts.org/"
 CANONICAL_COLUMNS = [
     "product_id", "product_sku", "product_name", "product_description", "main_category", "sub_category", "brand", "target_platform", "target_region", "target_country", "currency",
     "monthly_unit_sales", "monthly_revenue", "sales_growth_rate_30d", "average_rating", "total_reviews_count", "unit_cost_usd", "selling_price_usd", "gross_margin_percent", "platform_fee_percent", "shipping_cost_per_unit_usd", "net_profit_per_unit_usd",
@@ -28,10 +27,8 @@ def _normalize_column(value: Any) -> str:
 
 
 def _read_bytes(payload: bytes, name: str) -> pd.DataFrame:
-    suffix = Path(name).suffix.lower()
-    if suffix in {".xlsx", ".xls"}:
-        raw = pd.read_excel(BytesIO(payload), sheet_name=0, header=None)
-        return _detect_header(raw)
+    if Path(name).suffix.lower() in {".xlsx", ".xls"}:
+        return _detect_header(pd.read_excel(BytesIO(payload), sheet_name=0, header=None))
     return pd.read_csv(BytesIO(payload))
 
 
@@ -46,10 +43,9 @@ def _detect_header(raw: pd.DataFrame) -> pd.DataFrame:
 
 
 def _repair_shifted_headers(frame: pd.DataFrame) -> pd.DataFrame:
-    columns = [_normalize_column(column) for column in frame.columns]
     frame = frame.copy()
-    frame.columns = columns
-    if "product_name" not in columns and "product_id" in columns and columns and columns[0] in {"", "nan", "__empty"}:
+    frame.columns = [_normalize_column(column) for column in frame.columns]
+    if "product_name" not in frame.columns and "product_id" in frame.columns and frame.columns[0] in {"", "nan", "__empty"}:
         leading = frame.columns[0]
         frame["__canonical_product_id"] = frame[leading]
         frame["__canonical_product_name"] = frame["product_id"]
@@ -70,9 +66,7 @@ def normalize_catalogue(frame: pd.DataFrame, source_label: str, source_url: str 
     for column in ("product_id", "product_sku", "product_name"):
         frame[column] = frame[column].astype("string").str.strip()
     frame = frame[frame["product_id"].notna() & frame["product_name"].notna()].drop_duplicates("product_id").reset_index(drop=True)
-    frame.attrs["source_label"] = source_label
-    frame.attrs["source_url"] = source_url or ""
-    frame.attrs["loaded_at"] = pd.Timestamp.now("UTC").isoformat()
+    frame.attrs.update({"source_label": source_label, "source_url": source_url or "", "loaded_at": pd.Timestamp.now("UTC").isoformat()})
     return frame
 
 
@@ -84,7 +78,6 @@ def _empty(source_label: str, message: str) -> pd.DataFrame:
 
 @__import__("streamlit").cache_data(show_spinner=False)
 def load_catalogue(data_url: str = "") -> pd.DataFrame:
-    """Load only backend-managed data; public visitors cannot upload a catalogue."""
     if data_url:
         response = requests.get(data_url, timeout=30)
         response.raise_for_status()
@@ -96,32 +89,40 @@ def load_catalogue(data_url: str = "") -> pd.DataFrame:
 
 
 def _open_beauty_frame(products: list[dict[str, Any]], query: str) -> pd.DataFrame:
-    rows: list[dict[str, Any]] = []
+    rows = []
     for product in products:
-        code = str(product.get("code") or "").strip()
-        name = str(product.get("product_name") or "").strip()
+        code, name = str(product.get("code") or "").strip(), str(product.get("product_name") or "").strip()
         if not code or not name:
             continue
         categories = [item.strip() for item in str(product.get("categories") or "").split(",") if item.strip()]
-        rows.append({
-            "product_id": f"OBF-{code}", "product_sku": code, "product_name": name,
-            "product_description": product.get("ingredients_text") or "Identity record from Open Beauty Facts; commercial metrics were not supplied.",
-            "main_category": categories[0] if categories else "Beauty & personal care", "sub_category": categories[1] if len(categories) > 1 else "",
-            "brand": product.get("brands") or "Unknown brand", "target_country": product.get("countries") or "", "currency": "USD",
-            "last_updated_timestamp": product.get("last_modified") or "",
-        })
+        rows.append({"product_id": f"OBF-{code}", "product_sku": code, "product_name": name, "product_description": product.get("ingredients_text") or "Identity record from Open Beauty Facts; commercial metrics were not supplied.", "main_category": categories[0] if categories else "Beauty & personal care", "sub_category": categories[1] if len(categories) > 1 else "", "brand": product.get("brands") or "Unknown brand", "target_country": product.get("countries") or "", "currency": "USD", "last_updated_timestamp": product.get("last_modified") or ""})
     source_url = f"{OPEN_BEAUTY_FACTS_SEARCH}?search_terms={requests.utils.quote(query)}&search_simple=1&action=process&json=1"
     return normalize_catalogue(pd.DataFrame(rows, columns=CANONICAL_COLUMNS), f"Free fallback: Open Beauty Facts (query: {query})", source_url)
 
 
 def search_open_beauty_facts(query: str, limit: int = 25) -> pd.DataFrame:
-    """Search the free public Open Beauty Facts API for identity-only fallback results."""
-    query = query.strip()
-    if not query:
+    if not query.strip():
         return _empty("Open Beauty Facts fallback", "Enter a product or category search term.")
-    response = requests.get(OPEN_BEAUTY_FACTS_SEARCH, params={"search_terms": query, "search_simple": 1, "action": "process", "json": 1, "page_size": min(limit, 50), "fields": "code,product_name,brands,categories,ingredients_text,countries,last_modified"}, timeout=30)
+    response = requests.get(OPEN_BEAUTY_FACTS_SEARCH, params={"search_terms": query.strip(), "search_simple": 1, "action": "process", "json": 1, "page_size": min(limit, 50), "fields": "code,product_name,brands,categories,ingredients_text,countries,last_modified"}, timeout=30)
     response.raise_for_status()
     return _open_beauty_frame(response.json().get("products", []), query).head(limit)
+
+
+LIVE_FIELD_DEFAULTS = {"product_id": "provider_product_id", "product_sku": "provider_product_id", "product_name": "product_name", "product_description": "product_description", "main_category": "main_category", "sub_category": "sub_category", "brand": "brand", "selling_price_usd": "selling_price_usd", "average_rating": "average_rating", "total_reviews_count": "total_reviews_count", "target_country": "target_country", "currency": "currency", "last_updated_timestamp": "last_updated_timestamp"}
+
+
+def normalize_live_records(records: list[dict[str, Any]], source_label: str) -> pd.DataFrame:
+    rows = []
+    for record in records:
+        row = {column: record.get(source, pd.NA) for column, source in LIVE_FIELD_DEFAULTS.items()}
+        row.update({key: value for key, value in record.items() if key in CANONICAL_COLUMNS})
+        row["product_id"] = row.get("product_id") or f"live:{len(rows)}"
+        row["product_sku"] = row.get("product_sku") or row["product_id"]
+        row["product_name"] = row.get("product_name") or "Unnamed product"
+        rows.append(row)
+    frame = normalize_catalogue(pd.DataFrame(rows, columns=CANONICAL_COLUMNS), source_label)
+    frame.attrs["live_records"] = records
+    return frame
 
 
 def add_calculated_scores(frame: pd.DataFrame) -> pd.DataFrame:
